@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.log
+ws-spy-log*.txt
+house-edge-data-*.json
+patch*.js
+p*.js
+ws-spy.js
+test-login.js
+tele68-login.js
+.vscode/
