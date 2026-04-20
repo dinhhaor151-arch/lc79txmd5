@@ -3,6 +3,7 @@ node_modules/
 *.log
 ws-spy-log*.txt
 house-edge-data-*.json
+predictions.json
 patch*.js
 p*.js
 ws-spy.js

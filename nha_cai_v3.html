@@ -1082,6 +1082,33 @@ function setAutoStatus(msg, color) {
   if (el) { el.textContent = msg; el.style.color = color || 'var(--sub)'; }
 }
 
+// Gửi dữ liệu lên server để lưu persistent
+async function logPrediction(pred) {
+  try {
+    const base = document.getElementById('apiUrlInput')?.value || 'http://localhost:3000';
+    await fetch(base + '/log-prediction', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: pred.sessionId, prediction: pred.prediction,
+        conf: pred.conf, level: pred.level,
+        amtTai: pred.amtTai, amtXiu: pred.amtXiu,
+        userTai: pred.userTai, userXiu: pred.userXiu,
+        imbal: pred.imbal, dominant: pred.amtTai > pred.amtXiu ? 'TAI' : 'XIU'
+      })
+    });
+  } catch(e) { /* silent */ }
+}
+
+async function logResult(sessionId, result) {
+  try {
+    const base = document.getElementById('apiUrlInput')?.value || 'http://localhost:3000';
+    await fetch(base + '/log-result', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, result })
+    });
+  } catch(e) { /* silent */ }
+}
+
 
 function handleWsMessage(msg) {
   try {
@@ -1107,6 +1134,8 @@ function handleWsMessage(msg) {
             smFavor: window._pendingPred.smFavor, ts: window._pendingPred.ts
           });
           renderHistory();
+          // Log kết quả lên server
+          logResult(data.sessionId, result);
           const icon = correct === true ? '✅' : correct === false ? '❌' : '⏭️';
           setAutoStatus(icon + ' Phiên #' + data.sessionId + ' → ' + result + ' | Dự đoán: ' + window._pendingPred.prediction,
             correct === true ? 'var(--green)' : correct === false ? 'var(--tai)' : 'var(--sub)');
@@ -1172,6 +1201,8 @@ function handleWsMessage(msg) {
             }
           }
           isLocked = true;
+          // Log dự đoán lên server khi chốt
+          if (window._pendingPred) logPrediction(window._pendingPred);
         }
         timerTotal = 5;
         timerLeft  = phaseSec;
