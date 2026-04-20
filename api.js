@@ -30,10 +30,6 @@ function saveData() {
 
 loadData();
 
-const app = express();
-const server = http.createServer(app);
-const PORT = process.env.PORT || 3000;
-
 // ── WebSocket server cho browser ──
 const wss = new WebSocket.Server({ server, path: "/ws" });
 
