@@ -225,6 +225,11 @@ body::after{content:'';position:fixed;inset:0;z-index:0;background-image:linear-
 .kp-g{border-color:rgba(48,209,88,0.4);color:var(--green);background:rgba(48,209,88,0.06)}
 
 .footer{text-align:center;padding:20px;border-top:1px solid var(--border);font-size:0.73rem;color:var(--dim);line-height:1.8}
+.hist-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.hist-tab{padding:5px 14px;border-radius:var(--r);font-family:var(--mono);font-size:0.7rem;letter-spacing:1px;cursor:pointer;border:1px solid var(--border);background:rgba(255,255,255,0.03);color:var(--sub);transition:all 0.2s;text-transform:uppercase}
+.hist-tab:hover{background:rgba(255,255,255,0.07)}
+.hist-tab.active{background:rgba(0,194,255,0.12);border-color:rgba(0,194,255,0.4);color:var(--xiu)}
+.hist-tab.new-badge::after{content:'NEW';font-size:0.5rem;background:var(--green);color:#000;padding:1px 4px;border-radius:3px;margin-left:5px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -382,6 +387,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;background-image:linear-
 <!-- HISTORY -->
 <div class="sec-label">📜 LỊCH SỬ PHIÊN</div>
 <div class="history-card">
+  <div class="hist-tabs" id="histTabs"></div>
   <div class="hist-tape" id="histTape"><span style="color:var(--dim);font-size:0.76rem;font-family:var(--mono)">Chưa có dữ liệu — lưu kết quả phiên để bắt đầu phân tích</span></div>
   <div class="hist-stats" id="histStats"></div>
 </div>
@@ -1293,9 +1299,69 @@ function toggleAuto() {
 // ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
+// ── Load lịch sử từ server khi mở trang ──
+let serverHistPage = 1; // trang hiện tại đang xem
+let serverHistTotal = 0; // tổng số trang có trên server
+
+async function loadServerHistory(page) {
+  try {
+    const base = document.getElementById('apiUrlInput')?.value || window.location.origin;
+    const offset = (page - 1) * 100;
+    const res = await fetch(base + '/stats?limit=100&offset=' + offset);
+    const data = await res.json();
+    if (!data.recent || !data.recent.length) return;
+
+    // Merge vào sessions (tránh duplicate)
+    const existingIds = new Set(sessions.map(s => String(s.sessionId)));
+    let added = 0;
+    data.recent.forEach(p => {
+      if (!existingIds.has(String(p.sessionId))) {
+        sessions.push({
+          sessionId: p.sessionId,
+          result: p.result === '⏳' ? null : p.result,
+          prediction: p.prediction,
+          correct: p.correct,
+          conf: p.conf,
+          level: p.level,
+          dominant: p.dominant,
+          imbalStore: p.imbal,
+          ts: p.ts
+        });
+        added++;
+      }
+    });
+
+    // Sort theo ts mới nhất trước
+    sessions.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+    serverHistTotal = data.totalPages || 1;
+    serverHistPage  = page;
+    renderHistory();
+    renderHistTabs();
+    if (added > 0) console.log('[HIST] Loaded ' + added + ' sessions from server page ' + page);
+  } catch(e) { console.log('[HIST] Load error:', e.message); }
+}
+
+function renderHistTabs() {
+  const tabsEl = document.getElementById('histTabs');
+  if (!tabsEl || serverHistTotal <= 1) { if (tabsEl) tabsEl.innerHTML = ''; return; }
+
+  let html = '';
+  for (let i = 1; i <= serverHistTotal; i++) {
+    const isActive = i === serverHistPage;
+    const isNew = i > serverHistPage && i === serverHistPage + 1;
+    html += '<button class="hist-tab' + (isActive ? ' active' : '') + (isNew ? ' new-badge' : '') + '" onclick="loadServerHistory(' + i + ')">'
+      + 'Trang ' + i + ' (' + ((i-1)*100+1) + '-' + (i*100) + ')'
+      + '</button>';
+  }
+  tabsEl.innerHTML = html;
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   updateLockUI(true);
-  // Tự động bật khi load trang
+  // Load lịch sử từ server trước
+  loadServerHistory(1);
+  // Tự động bật WebSocket
   toggleAuto();
 });
 </script>

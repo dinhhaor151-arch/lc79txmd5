@@ -137,11 +137,12 @@ app.post("/log-result", (req, res) => {
 
 // ── Stats endpoint — xem đúng/sai nhanh ──
 app.get("/stats", (req, res) => {
+  const limit  = Math.min(parseInt(req.query.limit) || 10, 500);
+  const offset = Math.max(parseInt(req.query.offset) || 0, 0);
   const withResult = predictionLog.filter(p => p.result !== null);
   const correct    = withResult.filter(p => p.correct === true);
   const wrong      = withResult.filter(p => p.correct === false);
 
-  // Win rate theo level
   const byLevel = {};
   withResult.forEach(p => {
     if (!p.level) return;
@@ -150,17 +151,25 @@ app.get("/stats", (req, res) => {
     if (p.correct) byLevel[p.level].win++;
   });
 
-  // 10 phiên gần nhất với icon
-  const recent = predictionLog.slice(0, 10).map(p => ({
+  const recent = predictionLog.slice(offset, offset + limit).map(p => ({
     sessionId: p.sessionId,
     prediction: p.prediction,
-    result: p.result,
+    result: p.result || "⏳",
     correct: p.correct,
     icon: p.correct === true ? "✅" : p.correct === false ? "❌" : "⏳",
     conf: p.conf,
     level: p.level,
+    dominant: p.dominant,
     imbal: p.imbal
   }));
+
+  // Streak hiện tại
+  let streakCount = 0, streakType = null;
+  for (const p of withResult) {
+    if (streakType === null) streakType = p.correct;
+    if (p.correct === streakType) streakCount++;
+    else break;
+  }
 
   res.json({
     status: "ok",
@@ -169,33 +178,38 @@ app.get("/stats", (req, res) => {
       withResult: withResult.length,
       correct: correct.length,
       wrong: wrong.length,
+      pending: predictionLog.length - withResult.length,
       accuracy: withResult.length ? (correct.length / withResult.length * 100).toFixed(1) + "%" : "—",
-      streak: (() => {
-        let s = 0;
-        for (const p of withResult) { if (p.correct === withResult[0]?.correct) s++; else break; }
-        return (withResult[0]?.correct ? "✅ " : "❌ ") + s + " liên tiếp";
-      })()
+      streak: streakType === true ? `✅ ${streakCount} đúng liên tiếp` : streakType === false ? `❌ ${streakCount} sai liên tiếp` : "—"
     },
     byLevel: Object.fromEntries(Object.entries(byLevel).map(([lv, v]) => [lv, {
       winRate: (v.win / v.total * 100).toFixed(1) + "%",
-      total: v.total
+      total: v.total,
+      win: v.win
     }])),
-    recent
+    recent,
+    totalPages: Math.ceil(Math.min(predictionLog.length, 500) / 100),
+    currentPage: Math.floor(offset / 100) + 1,
+    note: `Showing ${limit} from offset ${offset}. Use ?limit=N&offset=N to paginate (max limit 500)`
   });
 });
 
 // ── Export full data cho AI ──
 app.get("/export", (req, res) => {
-  const withResult = predictionLog.filter(p => p.result !== null);
+  const limit = Math.min(parseInt(req.query.limit) || 50000, 50000);
+  const data  = predictionLog.slice(0, limit);
+  const withResult = data.filter(p => p.result !== null);
   const correct = withResult.filter(p => p.correct).length;
   res.json({
     status: "ok",
     exportedAt: new Date().toISOString(),
     summary: {
-      total: predictionLog.length,
+      total: data.length,
+      withResult: withResult.length,
       accuracy: withResult.length ? (correct / withResult.length * 100).toFixed(1) + "%" : "—"
     },
-    data: predictionLog
+    data,
+    note: `Use ?limit=N to limit results (default all, max 10000)`
   });
 });
 
