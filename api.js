@@ -116,7 +116,7 @@ app.post("/log-prediction", (req, res) => {
   const idx = predictionLog.findIndex(p => p.sessionId == sessionId);
   const entry = { sessionId, prediction, conf, level, amtTai, amtXiu, userTai, userXiu, imbal, dominant, ts: Date.now(), result: null, correct: null };
   if (idx >= 0) { predictionLog[idx] = { ...predictionLog[idx], ...entry }; }
-  else { predictionLog.unshift(entry); if (predictionLog.length > 10000) predictionLog.pop(); }
+  else { predictionLog.unshift(entry); if (predictionLog.length > 50000) predictionLog.pop(); }
   saveData();
   res.json({ status: "ok" });
 });
