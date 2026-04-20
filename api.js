@@ -50,8 +50,32 @@ wss.on("connection", (ws) => {
   ws.on("close", () => console.log("[WS] Browser ngắt kết nối"));
 });
 
-// Forward events từ tele68 → tất cả browser clients
-onEvent((type, data) => broadcast(type, data));
+// Forward events từ tele68 → tất cả browser clients + auto-log
+onEvent((type, data) => {
+  broadcast(type, data);
+
+  // Auto-log prediction khi server tự phân tích
+  if (type === 'auto-prediction') {
+    const idx = predictionLog.findIndex(p => p.sessionId == data.sessionId);
+    if (idx < 0) {
+      predictionLog.unshift({ ...data, result: null, correct: null });
+      if (predictionLog.length > 50000) predictionLog.pop();
+      saveData();
+    }
+  }
+
+  // Auto-log result khi có kết quả phiên
+  if (type === 'result') {
+    const idx = predictionLog.findIndex(p => p.sessionId == data.sessionId);
+    if (idx >= 0 && predictionLog[idx].result === null) {
+      predictionLog[idx].result  = data.result;
+      predictionLog[idx].correct = predictionLog[idx].prediction === data.result;
+      saveData();
+      const icon = predictionLog[idx].correct ? '✅' : '❌';
+      console.log(`[AUTO-RESULT] #${data.sessionId} → ${data.result} | Dự đoán: ${predictionLog[idx].prediction} ${icon}`);
+    }
+  }
+});
 
 // ── CORS ──
 app.use((req, res, next) => {

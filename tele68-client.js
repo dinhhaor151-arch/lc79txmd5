@@ -1,6 +1,7 @@
 const WebSocket = require("ws");
 const https = require("https");
 const crypto = require("crypto");
+const { computeSignals, makeDecision } = require("./engine");
 
 const WS_URL = "wss://wtxmd52.tele68.com/txmd5/?EIO=4&transport=websocket";
 
@@ -16,9 +17,10 @@ let reconnectAttempts = 0;
 let isConnected = false;
 
 // Live tick data — cập nhật realtime từ tick-update
-let liveTick = null; // { sessionId, tick, state, amtTai, amtXiu, userTai, userXiu, timestamp }
+let liveTick = null;
+let lastAutoAnalyzedSession = null; // tránh phân tích lại cùng phiên
 
-// Event callback — để api.js đăng ký nhận events realtime
+// Event callback
 let _onEvent = null;
 function onEvent(cb) { _onEvent = cb; }
 function emit(type, data) { if (_onEvent) _onEvent(type, data); }
@@ -186,6 +188,36 @@ async function connect() {
           totalUsers:  d.totalUniqueUsers || 0,
           timestamp: payload.timestamp || Date.now()
         };
+
+        // ── Auto-analyze: server tự phân tích khi còn 5 giây (subTick = 5) ──
+        const phaseSec = liveTick.subTick != null ? liveTick.subTick : liveTick.tick;
+        if (
+          liveTick.state === 'BETTING' &&
+          phaseSec === 5 &&
+          liveTick.sessionId !== lastAutoAnalyzedSession &&
+          liveTick.amtTai > 0 && liveTick.amtXiu > 0
+        ) {
+          lastAutoAnalyzedSession = liveTick.sessionId;
+          try {
+            const s = computeSignals(liveTick.amtTai, liveTick.amtXiu, liveTick.userTai, liveTick.userXiu, results);
+            const d2 = makeDecision(s, results);
+            emit('auto-prediction', {
+              sessionId: liveTick.sessionId,
+              prediction: d2.prediction,
+              conf: parseFloat(d2.conf.toFixed(1)),
+              level: d2.level,
+              amtTai: liveTick.amtTai,
+              amtXiu: liveTick.amtXiu,
+              userTai: liveTick.userTai,
+              userXiu: liveTick.userXiu,
+              imbal: parseFloat((s.imbal * 100).toFixed(2)),
+              dominant: liveTick.amtTai > liveTick.amtXiu ? 'TAI' : 'XIU',
+              ts: Date.now()
+            });
+            console.log(`[AUTO] Phiên #${liveTick.sessionId} → ${d2.prediction} (${d2.conf.toFixed(0)}% ${d2.level})`);
+          } catch(e) { console.error('[AUTO] Analyze error:', e.message); }
+        }
+
         emit("tick", liveTick);
         return;
       } else if (event === "session-info") {
