@@ -1,5 +1,10 @@
-// engine.js — Thuật toán phân tích dùng chung cho server và HTML
-// Server dùng: const { computeSignals, makeDecision } = require('./engine');
+// engine.js v4 — Mode-based prediction
+// Key findings từ analyze2.js:
+// 1. Sau 6+ FOLLOW liên tiếp → 61% COUNTER tiếp theo
+// 2. Imbal > 20% → 60% FOLLOW (bên nhiều tiền thắng)
+// 3. Prev imbal 15-20% → 62.5% COUNTER tiếp theo
+// 4. COUNTER → COUNTER: 53.7% (momentum counter)
+// 5. FOLLOW → FOLLOW: 50.5% (gần random)
 
 function computeSignals(amtTai, amtXiu, userTai, userXiu, sessionHistory) {
   const sessions = sessionHistory || [];
@@ -20,120 +25,137 @@ function computeSignals(amtTai, amtXiu, userTai, userXiu, sessionHistory) {
   const minorCrd = majorCrd === 'TAI' ? 'XIU' : 'TAI';
   const majorCrdPct = Math.max(pUT, pUX);
 
-  // S1: Money Pressure
-  let mp = majorPct > 78 ? 0.95 : majorPct > 70 ? 0.80 : majorPct > 63 ? 0.62 :
-           majorPct > 57 ? 0.42 : majorPct > 53 ? 0.22 : 0.06;
+  // ── Tính mode lịch sử ──
+  const withMode = sessions.filter(s => s.result && s.dominant && s.dominant !== 'EQUAL').map(s => ({
+    ...s,
+    mode: s.result === s.dominant ? 'FOLLOW' : 'COUNTER'
+  }));
 
-  // S2: Smart Money
-  let sm = 0, smFavor = null;
-  if (avgT > 0 && avgX > 0) {
-    const r = avgT / avgX;
-    if (r > 2.5)       { sm = 0.90; smFavor = 'TAI'; }
-    else if (r > 1.8)  { sm = 0.72; smFavor = 'TAI'; }
-    else if (r > 1.35) { sm = 0.48; smFavor = 'TAI'; }
-    else if (r < 0.40) { sm = 0.90; smFavor = 'XIU'; }
-    else if (r < 0.56) { sm = 0.72; smFavor = 'XIU'; }
-    else if (r < 0.74) { sm = 0.48; smFavor = 'XIU'; }
-    else               { sm = 0.08; }
+  // ── S_MODE: Mode-based signal (KEY SIGNAL) ──
+  let modeSig = 0, modeFavor = null;
+
+  // Signal 1: Sau 6+ FOLLOW liên tiếp → 61% COUNTER
+  if (withMode.length >= 6) {
+    const last6 = withMode.slice(0, 6);
+    if (last6.every(s => s.mode === 'FOLLOW')) {
+      modeSig = 0.72; modeFavor = minorM; // COUNTER = bên ít tiền thắng
+    }
   }
-
-  // S3: Crowd Trap
-  let ct = majorCrdPct > 70 ? 0.88 : majorCrdPct > 63 ? 0.68 :
-           majorCrdPct > 57 ? 0.40 : majorCrdPct > 53 ? 0.18 : 0.04;
-
-  // S4: Divergence Whale
-  let dv = 0, dvFavor = null;
-  if (divPct > 25)      { dv = 0.88; dvFavor = majorM; }
-  else if (divPct > 15) { dv = 0.62; dvFavor = majorM; }
-  else if (divPct > 8)  { dv = 0.35; dvFavor = majorM; }
-  else dv = 0.06;
-
-  // S5: Imbalance Risk
-  let ib = imbal > 0.40 ? 0.92 : imbal > 0.28 ? 0.72 : imbal > 0.18 ? 0.50 :
-           imbal > 0.10 ? 0.28 : 0.06;
-
-  // S6: History Bias
-  let hb = 0, hbFavor = null;
-  const withDom = sessions.filter(s => s.dominant && s.dominant !== 'EQUAL' && s.result);
-  if (withDom.length >= 5) {
-    const minorWins = withDom.filter(s => s.result !== s.dominant).length;
-    const minorRate = minorWins / withDom.length;
-    if (minorRate > 0.70)      { hb = 0.90; hbFavor = minorM; }
-    else if (minorRate > 0.55) { hb = 0.60; hbFavor = minorM; }
-    else if (minorRate < 0.30) { hb = 0.90; hbFavor = majorM; }
-    else if (minorRate < 0.45) { hb = 0.60; hbFavor = majorM; }
-    else { hb = 0.10; }
-  }
-
-  // S7: Recent Momentum
-  let rm = 0, rmFavor = null;
-  const recentResults = sessions.filter(s => s.result).slice(0, 3).map(s => s.result);
-  if (recentResults.length >= 3) {
-    if (recentResults.every(r => r === 'TAI'))      { rm = 0.60; rmFavor = 'XIU'; }
-    else if (recentResults.every(r => r === 'XIU')) { rm = 0.60; rmFavor = 'TAI'; }
-    else if (recentResults[0] !== recentResults[1]) { rm = 0.30; rmFavor = recentResults[0] === 'TAI' ? 'XIU' : 'TAI'; }
-  }
-
-  // S8: Dominant Follow
-  let df = 0, dfFavor = null;
-  if (withDom.length >= 8) {
-    const minorWins = withDom.filter(s => s.result !== s.dominant).length;
-    const minorRate = minorWins / withDom.length;
-    if (minorRate < 0.40) {
-      df = Math.min(0.70 + (0.40 - minorRate) * 1.5, 0.95);
-      dfFavor = majorM;
-    } else if (minorRate > 0.60) {
-      df = Math.min(0.70 + (minorRate - 0.60) * 1.5, 0.95);
-      dfFavor = minorM;
+  // Signal 2: Sau 4-5 FOLLOW → 52-53% COUNTER (yếu hơn)
+  if (!modeFavor && withMode.length >= 4) {
+    const last4 = withMode.slice(0, 4);
+    if (last4.every(s => s.mode === 'FOLLOW')) {
+      modeSig = 0.55; modeFavor = minorM;
     }
   }
 
-  const targetSide = hbFavor || minorM;
-  const moneySignal  = mp > 0.40;
-  const crowdSignal  = ct > 0.40 && minorCrd === minorM;
-  const smartSignal  = smFavor === targetSide && sm > 0.50;
-  const agreementCount = [moneySignal, crowdSignal, smartSignal].filter(Boolean).length;
+  // Signal 3: Imbal > 20% → 60% FOLLOW (bên nhiều tiền thắng)
+  if (imbal > 0.20) {
+    if (!modeFavor || modeSig < 0.65) {
+      modeSig = 0.65; modeFavor = majorM;
+    }
+  }
 
-  const mp_c = hbFavor === majorM ? -mp * 0.5 : mp;
-  const sm_c = smFavor === targetSide ? sm : smFavor ? -sm * 0.4 : 0;
-  const ct_c = minorCrd === targetSide ? ct : -ct * 0.3;
-  const dv_c = dvFavor === targetSide ? dv : dvFavor ? -dv * 0.3 : 0;
-  const ib_c = ib;
-  const hb_c = hbFavor === targetSide ? hb : hbFavor ? -hb * 0.8 : 0;
-  const rm_c = rmFavor === targetSide ? rm : rmFavor ? -rm * 0.4 : 0;
-  const df_c = dfFavor === targetSide ? df : dfFavor ? -df * 0.6 : 0;
+  // Signal 4: COUNTER momentum — sau 3+ COUNTER → 56% COUNTER tiếp
+  if (!modeFavor && withMode.length >= 3) {
+    const last3 = withMode.slice(0, 3);
+    if (last3.every(s => s.mode === 'COUNTER')) {
+      modeSig = 0.58; modeFavor = minorM;
+    }
+  }
+
+  // Signal 5: Prev imbal 15-20% → 62.5% COUNTER tiếp theo
+  if (!modeFavor && withMode.length >= 1) {
+    const prevImbal = withMode[0].imbalStore ? withMode[0].imbalStore * 100 : (withMode[0].imbal || 0);
+    if (prevImbal >= 15 && prevImbal < 20) {
+      modeSig = 0.63; modeFavor = minorM; // COUNTER
+    }
+  }
+
+  // ── S1: Money Pressure ──
+  let mp = imbal > 0.25 ? 0.88 : imbal > 0.15 ? 0.72 : imbal > 0.10 ? 0.52 :
+           imbal > 0.07 ? 0.32 : imbal > 0.05 ? 0.15 : 0.03;
+
+  // ── S2: Smart Money ──
+  let sm = 0, smFavor = null;
+  if (avgT > 0 && avgX > 0) {
+    const r = avgT / avgX;
+    if (r > 2.5)       { sm = 0.88; smFavor = 'TAI'; }
+    else if (r > 1.8)  { sm = 0.70; smFavor = 'TAI'; }
+    else if (r > 1.35) { sm = 0.45; smFavor = 'TAI'; }
+    else if (r < 0.40) { sm = 0.88; smFavor = 'XIU'; }
+    else if (r < 0.56) { sm = 0.70; smFavor = 'XIU'; }
+    else if (r < 0.74) { sm = 0.45; smFavor = 'XIU'; }
+    else               { sm = 0.03; }
+  }
+
+  // ── S6: History Bias ──
+  let hb = 0, hbFavor = null;
+  const withDom = sessions.filter(s => s.dominant && s.dominant !== 'EQUAL' && s.result);
+  if (withDom.length >= 20) {
+    const minorWins = withDom.filter(s => s.result !== s.dominant).length;
+    const minorRate = minorWins / withDom.length;
+    if (minorRate > 0.65)      { hb = 0.85; hbFavor = minorM; }
+    else if (minorRate > 0.58) { hb = 0.58; hbFavor = minorM; }
+    else if (minorRate < 0.35) { hb = 0.85; hbFavor = majorM; }
+    else if (minorRate < 0.42) { hb = 0.58; hbFavor = majorM; }
+    else { hb = 0.03; }
+  }
+
+  // ── S7: Momentum ──
+  let rm = 0, rmFavor = null;
+  const recentR = sessions.filter(s => s.result).slice(0, 5).map(s => s.result);
+  if (recentR.length >= 5 && recentR.every(r => r === 'TAI')) { rm = 0.72; rmFavor = 'XIU'; }
+  else if (recentR.length >= 5 && recentR.every(r => r === 'XIU')) { rm = 0.72; rmFavor = 'TAI'; }
+  else if (recentR.length >= 3 && recentR.slice(0,3).every(r => r === 'TAI')) { rm = 0.52; rmFavor = 'XIU'; }
+  else if (recentR.length >= 3 && recentR.slice(0,3).every(r => r === 'XIU')) { rm = 0.52; rmFavor = 'TAI'; }
+
+  // ── Target ──
+  // Ưu tiên: modeFavor > hbFavor > minorM
+  const targetSide = modeFavor || hbFavor || minorM;
+
+  // ── Composite Score ──
+  const mode_c = modeFavor === targetSide ? modeSig : modeFavor ? -modeSig * 0.8 : 0;
+  const mp_c   = hbFavor === majorM ? -mp * 0.3 : (targetSide === minorM ? mp : -mp * 0.3);
+  const sm_c   = smFavor === targetSide ? sm : smFavor ? -sm * 0.2 : 0;
+  const hb_c   = hbFavor === targetSide ? hb : hbFavor ? -hb * 0.9 : 0;
+  const rm_c   = rmFavor === targetSide ? rm : rmFavor ? -rm * 0.2 : 0;
 
   const rawScore =
-    mp_c * 0.20 + sm_c * 0.18 + ct_c * 0.12 + dv_c * 0.08 +
-    ib_c * 0.07 + hb_c * 0.25 + rm_c * 0.05 + df_c * 0.15;
+    mode_c * 0.40 +  // Mode signal — QUAN TRỌNG NHẤT
+    mp_c   * 0.18 +
+    sm_c   * 0.12 +
+    hb_c   * 0.20 +
+    rm_c   * 0.10;
 
-  let score = 0.5 + rawScore * 0.70;
-  if (agreementCount === 3) score = Math.min(0.97, score + 0.06);
-  if (agreementCount === 0) score = Math.max(0.05, score - 0.05);
-  score = Math.max(0.05, Math.min(0.97, score));
+  let score = 0.5 + rawScore * 0.65;
+  score = Math.max(0.32, Math.min(0.97, score));
 
   return {
-    score, majorM, minorM, majorPct, predTarget: hbFavor || minorM,
+    score, majorM, minorM, majorPct, predTarget: targetSide,
     pAT, pAX, pUT, pUX, avgT, avgX,
     imbal, divPct, majorCrd, minorCrd, majorCrdPct,
-    mp, sm, smFavor, ct, dv, dvFavor, ib,
-    hb, hbFavor, rm, rmFavor, df, dfFavor,
-    agreementCount, withDomCount: withDom.length
+    mp, sm, smFavor, hb, hbFavor, rm, rmFavor,
+    modeSig, modeFavor,
+    withDomCount: withDom.length,
+    agreementCount: [mp > 0.40, sm > 0.40, modeSig > 0.55].filter(Boolean).length
   };
 }
 
 function makeDecision(s, sessionHistory) {
-  const sessions = sessionHistory || [];
   const conf = s.score * 100;
-  const target   = s.predTarget || s.minorM;
-  const opposite = target === 'TAI' ? 'XIU' : 'TAI';
+  const target = s.predTarget || s.minorM;
+  const warnings = [];
+  if (s.imbal < 0.05) warnings.push('Tien can bang');
+  if (s.modeFavor) warnings.push('Mode signal: ' + s.modeFavor + ' (' + (s.modeSig*100).toFixed(0) + '%)');
+
   let prediction, level;
-  if      (conf >= 72) { prediction = target;   level = 'STRONG'; }
-  else if (conf >= 62) { prediction = target;   level = 'GOOD'; }
-  else if (conf >= 52) { prediction = target;   level = 'WEAK'; }
-  else if (conf <= 38) { prediction = opposite; level = 'COUNTER'; }
-  else                 { prediction = target;   level = 'WEAK'; }
-  return { prediction, conf, level };
+  if      (conf >= 68) { prediction = target; level = 'STRONG'; }
+  else if (conf >= 60) { prediction = target; level = 'GOOD'; }
+  else if (conf >= 52) { prediction = target; level = 'WEAK'; }
+  else                 { prediction = target; level = 'WEAK'; }
+
+  return { prediction, conf, level, warnings };
 }
 
 module.exports = { computeSignals, makeDecision };
